@@ -1,0 +1,29 @@
+[package]
+name = "flexi_logger_datadog"
+version = "0.1.0"
+edition = "2021"
+authors = ["Aaron Griffin <aaron@sevco.io>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait = "^0.1"
+reqwest = { version = "^0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+thiserror = "^1.0"
+itertools = "^0.10"
+flexi_logger = { version = "^0.22", features = ["use_chrono_for_offset"] }
+log = "^0.4"
+serde = "^1.0"
+bytebuffer = "^0.2"
+chrono = "^0.4"
+flume = "^0.10"
+tokio = { version = "^1.12", optional = true }
+
+[features]
+default = ["tokio-rt"]
+tokio-rt = ["tokio"]
+
+[dev-dependencies]
+httpmock = "^0.6"
+anyhow = "^1.0"
+tokio-retry = "^0.3"
