@@ -1,3 +1,8 @@
+//! DataDog output for [flexi_logger](https://github.com/emabee/flexi_logger)
+
+#![deny(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 use crate::adapter::DataDogAdapter;
 use crate::config::DataDogConfig;
 use crate::writer::DataDogHttpWriter;
@@ -11,6 +16,7 @@ pub mod config;
 pub mod error;
 pub mod writer;
 
+/// Create and set logger with the writer running on the tokio runtime
 #[cfg(feature = "tokio-rt")]
 pub async fn init_tokio_logger(
     datadog_config: DataDogConfig,
@@ -23,6 +29,7 @@ pub async fn init_tokio_logger(
         .map(|l| (l, handle))
 }
 
+/// Create and spawn logger on the tokio runtime
 #[cfg(feature = "tokio-rt")]
 pub async fn spawn_tokio_logger(
     datadog_config: DataDogConfig,
@@ -33,6 +40,8 @@ pub async fn spawn_tokio_logger(
     (adapter, handle)
 }
 
+/// Create [`DataDogAdapter`] and [`DataDogHttpWriter`].
+/// `writer.poll()` will need to be spawned via a thread or runtime
 pub fn new_datadog_http_logger(
     datadog_config: DataDogConfig,
     flush_interval: Option<Duration>,

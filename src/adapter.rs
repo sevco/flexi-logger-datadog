@@ -1,3 +1,5 @@
+//! Writable adapter that manages communication with the async writer task
+
 use crate::error::Error::{AdapterShutdownError, LockError};
 use crate::error::{log_error, Error};
 use flexi_logger::writers::LogWriter;
@@ -7,21 +9,30 @@ use std::io;
 use std::io::ErrorKind;
 use std::sync::Mutex;
 
-pub struct LogStream {
+/// Channel for sending log messages
+struct LogStream {
+    /// Log send channel
     logs: flume::Sender<String>,
 }
 
-pub struct FlushStream {
+/// Encapsulation of flush request/response channels
+struct FlushStream {
+    /// Flush request channel
     request: flume::Sender<()>,
+    /// Flush response channel
     response: flume::Receiver<Result<(), Error>>,
 }
 
+/// Writable adapter that manages communication with the async writer task
 pub struct DataDogAdapter {
+    /// Log channel
     log_channel: Mutex<Option<LogStream>>,
+    /// Flush channels
     flush_channel: Mutex<Option<FlushStream>>,
 }
 
 impl DataDogAdapter {
+    /// Create new [`DataDogAdapter`] with channels
     pub fn new(
         logs: flume::Sender<String>,
         flush_request: flume::Sender<()>,

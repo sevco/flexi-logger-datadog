@@ -1,3 +1,5 @@
+//! Writer task that posts data to the api
+
 use crate::error::{log_error, Error};
 use crate::DataDogConfig;
 use chrono::{DateTime, Duration, Utc};
@@ -8,25 +10,41 @@ use reqwest::header::CONTENT_TYPE;
 use reqwest::Client;
 use std::time;
 
+/// Default channel recv timeout
 const POLL_TIMEOUT_MS: u64 = 100;
 
+/// API writer
 pub struct DataDogHttpWriter {
+    /// HTTP client
     client: Client,
+    /// DataDog api url
     api_host: String,
+    /// DataDog api key
     api_key: String,
+    /// Query path
     query: Vec<(String, String)>,
+    /// Maximum allowed line sized
     max_line_size: usize,
+    /// Maximum allowed request size
     max_payload_size: usize,
+    /// How often to flush writer (never if [`None`])
     flush_interval: Option<Duration>,
+    /// When logs were last flushed
     last_flushed: DateTime<Utc>,
+    /// Log receiver
     logs: flume::Receiver<String>,
+    /// Flush request receiver
     flush_request: flume::Receiver<()>,
+    /// Flush response sender
     flush_response: flume::Sender<Result<(), Error>>,
+    /// Log buffer
     buffer_lines: Vec<String>,
+    /// Size of buffer
     buffer_size: usize,
 }
 
 impl DataDogHttpWriter {
+    /// Create new [`DataDogHttpWriter`]
     pub fn new(
         datadog_config: DataDogConfig,
         flush_interval: Option<Duration>,
@@ -64,6 +82,7 @@ impl DataDogHttpWriter {
         }
     }
 
+    /// Buffer new log line
     async fn buffer(&mut self, line: String) -> Result<(), Error> {
         self.buffer_size += line.as_bytes().len();
         self.buffer_lines.push(line);
@@ -74,6 +93,7 @@ impl DataDogHttpWriter {
         }
     }
 
+    /// Handle incoming log line
     async fn on_message(&mut self, message: String) -> Result<(), Error> {
         let bytes = message.as_bytes().len();
         if bytes > self.max_line_size {
@@ -85,6 +105,7 @@ impl DataDogHttpWriter {
         }
     }
 
+    /// Flush log lines in buffer
     async fn flush(&mut self) -> Result<(), Error> {
         info!("Flushing logger");
         if self.buffer_size > 0 {
@@ -96,6 +117,7 @@ impl DataDogHttpWriter {
         Ok(())
     }
 
+    /// Post data to api
     async fn send(&mut self) -> Result<(), Error> {
         info!("Sending {} log lines", self.buffer_lines.len());
         match self
@@ -116,6 +138,7 @@ impl DataDogHttpWriter {
         }
     }
 
+    /// Check if flush interval has elapsed since last send, and flush if so
     async fn time_based_flush(&mut self) -> Result<(), Error> {
         if let Some(d) = self.flush_interval {
             if Utc::now() > self.last_flushed + d {
@@ -125,13 +148,18 @@ impl DataDogHttpWriter {
         Ok(())
     }
 
+    /// Writer poll loop.
+    ///
+    /// This is what drives the actual execution of the logger
     pub async fn poll(&mut self) {
         let timeout = time::Duration::from_millis(POLL_TIMEOUT_MS);
         loop {
+            // Check if a flush is necessary
             if let Err(e) = self.time_based_flush().await {
                 log_error(e);
             }
 
+            // Retrieve and handle any new log messages
             match self.logs.recv_timeout(timeout) {
                 Ok(l) => match self.on_message(l).await {
                     Ok(_) => (),
@@ -143,8 +171,10 @@ impl DataDogHttpWriter {
                 Err(RecvTimeoutError::Disconnected) => break,
             };
 
-            match self.flush_request.recv_timeout(timeout) {
+            // Check for any flush requests
+            match self.flush_request.recv_timeout(timeout / 2) {
                 Ok(_) => {
+                    // On flush request, perform a flush and send the result back over the channel
                     let flush_result = self.flush().await.map_err(|e| {
                         eprintln!("Failed to flush logs: {}", e);
                         e
@@ -157,11 +187,15 @@ impl DataDogHttpWriter {
                 Err(RecvTimeoutError::Disconnected) => break,
             };
         }
+
+        // Loop has been exited here from one or all of the channels closing
+        // Drain and handle any remaining messages from the log channel
         for message in self.logs.drain().collect_vec() {
             if let Err(e) = self.on_message(message).await {
                 log_error(e);
             }
         }
+        // Flush one last time
         if let Err(e) = self.flush().await {
             log_error(e);
         }
