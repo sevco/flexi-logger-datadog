@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Aaron Griffin <aaron@sevco.io>"]
 
+license = "MIT"
+description = "A `flexi_logger` compatible logger that sends to DataDog"
+repository = "https://github.com/sevco/flexi-logger-datadog"
+documentation = "https://docs.rs/flexi-logger-datadog"
+readme = "README.md"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
