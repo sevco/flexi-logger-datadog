@@ -14,12 +14,14 @@
 #[tokio::main]
 async fn main() {
     let dd_config = DataDogConfigBuilder::new(
-        "logger-example".to_string(),
-        "logger-example".to_string(),
+        "logging-service-hostname".to_string(),
+        "logging-service".to_string(),
         "DUMMY_API_KEY".to_string(),
     )
-        .build();
+    .build();
+    
     init_tokio_logger(dd_config, None).await.unwrap();
+    
     trace!("Trace message");
     debug!("Debug message");
     info!("Info message");
