@@ -1,8 +1,8 @@
 # flexi-logger-datadog
 
 ![Crates.io](https://img.shields.io/crates/v/flexi-logger-datadog)
-![docs.rs](https://docs.rs/flexi-logger-datadog/badge.svg)
-![GitHub Workflow Status](https://img.shields.io/github/workflow/status/sevco/flexi-logger-datadog/CI)
+![docs.rs](https://docs.rs/flexi_logger_datadog/badge.svg)
+![GitHub Workflow Status](https://img.shields.io/github/checks-status/sevco/flexi-logger-datadog/main)
 
 ### Logger for https://github.com/emabee/flexi_logger that writes to DataDog.
 
