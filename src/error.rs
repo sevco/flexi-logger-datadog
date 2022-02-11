@@ -20,6 +20,9 @@ pub enum Error {
     /// Adapter has been shutdown and can no longer be operated on
     #[error("Adapter is shut down")]
     AdapterShutdownError,
+    /// Internal channel communication error
+    #[error("Channel communication error: `{0}`")]
+    ChannelError(String),
 }
 
 /// Log error to stderr and at error level

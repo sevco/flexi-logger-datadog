@@ -1,11 +1,12 @@
 //! Writer task that posts data to the api
 
+use crate::error::Error::ChannelError;
 use crate::error::{log_error, Error};
 use crate::DataDogConfig;
 use chrono::{DateTime, Duration, Utc};
 use flume::RecvTimeoutError;
 use itertools::Itertools;
-use log::{error, info};
+use log::{debug, error};
 use reqwest::header::CONTENT_TYPE;
 use reqwest::Client;
 use std::time;
@@ -82,33 +83,90 @@ impl DataDogHttpWriter {
         }
     }
 
-    /// Buffer new log line
-    async fn buffer(&mut self, line: String) -> Result<(), Error> {
-        self.buffer_size += line.as_bytes().len();
-        self.buffer_lines.push(line);
-        if self.buffer_size >= self.max_payload_size {
-            self.flush().await
-        } else {
-            Ok(())
+    /// Writer poll loop.
+    ///
+    /// This is what drives the actual execution of the logger
+    pub async fn poll(&mut self) {
+        let timeout = time::Duration::from_millis(POLL_TIMEOUT_MS);
+        loop {
+            // Check if a flush is necessary
+            if let Err(e) = self.time_based_flush().await {
+                log_error(e);
+            }
+
+            // Retrieve and handle any new log messages
+            match self.receive_logs(timeout).await {
+                Ok(true) => (),
+                Ok(false) => break,
+                Err(e) => log_error(e),
+            }
+
+            // Check for any flush requests
+            match self.receive_flush(timeout).await {
+                Ok(true) => (),
+                Ok(false) => break,
+                Err(e) => log_error(e),
+            }
+        }
+
+        // Loop has been exited here from one or all of the channels closing
+        // Drain and handle any remaining messages from the log channel and flush one last time
+        if let Err(e) = self.drain().await {
+            log_error(e);
+        }
+        if let Err(e) = self.flush().await {
+            log_error(e);
+        }
+    }
+
+    /// Receive and process any incoming log lines
+    async fn receive_logs(&mut self, timeout: time::Duration) -> Result<bool, Error> {
+        match self.logs.recv_timeout(timeout) {
+            Ok(l) => {
+                self.on_message(l).await;
+                self.check_flush().await?;
+                Ok(true)
+            }
+            Err(RecvTimeoutError::Timeout) => Ok(true),
+            Err(RecvTimeoutError::Disconnected) => Ok(false),
+        }
+    }
+
+    /// Receive and process any incoming flush requests
+    async fn receive_flush(&mut self, timeout: time::Duration) -> Result<bool, Error> {
+        match self.flush_request.recv_timeout(timeout / 2) {
+            Ok(_) => {
+                // On flush request, perform a flush and send the result back over the channel
+                self.drain().await?;
+                let flush_result = self.flush().await.map_err(|e| {
+                    eprintln!("Failed to flush logs: {}", e);
+                    e
+                });
+                self.flush_response
+                    .send(flush_result)
+                    .map_err(|e| ChannelError(format!("Failed to send flush response: {}", e)))?;
+                Ok(true)
+            }
+            Err(RecvTimeoutError::Timeout) => Ok(true),
+            Err(RecvTimeoutError::Disconnected) => Ok(false),
         }
     }
 
     /// Handle incoming log line
-    async fn on_message(&mut self, message: String) -> Result<(), Error> {
+    async fn on_message(&mut self, message: String) {
         let bytes = message.as_bytes().len();
         if bytes > self.max_line_size {
             error!("Log line longer than 1MB maximum");
-            eprintln!("{}", message);
-            Ok(())
         } else {
-            self.buffer(message).await.map_err(Error::from)
+            self.buffer_size += message.as_bytes().len();
+            self.buffer_lines.push(message);
         }
     }
 
     /// Flush log lines in buffer
     async fn flush(&mut self) -> Result<(), Error> {
-        info!("Flushing logger");
         if self.buffer_size > 0 {
+            debug!("Flushing logger");
             self.send().await?;
             self.buffer_lines = vec![];
             self.buffer_size = 0;
@@ -119,7 +177,7 @@ impl DataDogHttpWriter {
 
     /// Post data to api
     async fn send(&mut self) -> Result<(), Error> {
-        info!("Sending {} log lines", self.buffer_lines.len());
+        debug!("Sending {} log lines", self.buffer_lines.len());
         match self
             .client
             .post(&self.api_host)
@@ -148,56 +206,22 @@ impl DataDogHttpWriter {
         Ok(())
     }
 
-    /// Writer poll loop.
-    ///
-    /// This is what drives the actual execution of the logger
-    pub async fn poll(&mut self) {
-        let timeout = time::Duration::from_millis(POLL_TIMEOUT_MS);
-        loop {
-            // Check if a flush is necessary
-            if let Err(e) = self.time_based_flush().await {
-                log_error(e);
-            }
-
-            // Retrieve and handle any new log messages
-            match self.logs.recv_timeout(timeout) {
-                Ok(l) => match self.on_message(l).await {
-                    Ok(_) => (),
-                    Err(e) => {
-                        eprintln!("Failed to write logs: {}", e);
-                    }
-                },
-                Err(RecvTimeoutError::Timeout) => (),
-                Err(RecvTimeoutError::Disconnected) => break,
-            };
-
-            // Check for any flush requests
-            match self.flush_request.recv_timeout(timeout / 2) {
-                Ok(_) => {
-                    // On flush request, perform a flush and send the result back over the channel
-                    let flush_result = self.flush().await.map_err(|e| {
-                        eprintln!("Failed to flush logs: {}", e);
-                        e
-                    });
-                    if let Err(e) = self.flush_response.send(flush_result) {
-                        log_error(e);
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) => (),
-                Err(RecvTimeoutError::Disconnected) => break,
-            };
+    /// Drain and handle any messages on the log channel
+    async fn drain(&mut self) -> Result<(), Error> {
+        let drained = self.logs.drain().collect_vec();
+        for message in drained {
+            self.on_message(message).await;
+            self.check_flush().await?;
         }
+        Ok(())
+    }
 
-        // Loop has been exited here from one or all of the channels closing
-        // Drain and handle any remaining messages from the log channel
-        for message in self.logs.drain().collect_vec() {
-            if let Err(e) = self.on_message(message).await {
-                log_error(e);
-            }
-        }
-        // Flush one last time
-        if let Err(e) = self.flush().await {
-            log_error(e);
+    /// Check if buffer
+    async fn check_flush(&mut self) -> Result<(), Error> {
+        if self.buffer_size >= self.max_payload_size {
+            self.flush().await
+        } else {
+            Ok(())
         }
     }
 }

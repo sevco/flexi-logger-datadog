@@ -59,7 +59,7 @@ impl LogWriter for DataDogAdapter {
                 )
             })
             .and_then(|maybe_logs| match &*maybe_logs {
-                None => Ok(()),
+                None => Err(io::Error::new(ErrorKind::BrokenPipe, AdapterShutdownError)),
                 Some(stream) => {
                     let log = format!(
                         "{} [{}] {}",
