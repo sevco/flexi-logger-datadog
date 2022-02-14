@@ -1,6 +1,6 @@
 [package]
 name = "flexi_logger_datadog"
-version = "0.1.1"
+version = "0.1.2-alpha.0"
 edition = "2021"
 authors = ["Aaron Griffin <aaron@sevco.io>"]
 
