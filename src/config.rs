@@ -6,11 +6,11 @@ use itertools::Itertools;
 /// Default log api URL
 const DEFAULT_DATADOG_INGEST_URL: &str = "https://http-intake.logs.datadoghq.com/api/v2/logs";
 /// Maximum request size DataDog api will accept
-const DEFAULT_MAX_PAYLOAD_BYTES: usize = 5000;
+const DEFAULT_MAX_PAYLOAD_BYTES: usize = 5000000;
 /// Maximum bytes to buffer before sending to DataDog
 const DEFAULT_BODY_SEND_BYTES: usize = ((DEFAULT_MAX_PAYLOAD_BYTES as f64) * 0.75f64) as usize;
-/// Maximum size of log line DataDog api will accept
-const DEFAULT_MAX_LINE_BYTES: usize = 1024;
+/// Maximum number of log lines allowed in an array
+const DEFAULT_MAX_LOG_LINES: usize = 1000;
 
 /// DataDog api configuration
 pub struct DataDogConfig {
@@ -26,8 +26,8 @@ pub struct DataDogConfig {
     pub tags: Vec<(String, String)>,
     /// The integration name associated with your log
     pub source: String,
-    /// Maximum allowed size of log line
-    pub max_line_size: usize,
+    /// Maximum log lines in a single request
+    pub max_log_lines: usize,
     /// Maximum allowed api request size
     pub max_payload_size: usize,
 }
@@ -46,8 +46,8 @@ pub struct DataDogConfigBuilder {
     tags: Vec<(String, String)>,
     /// The integration name associated with your log
     source: String,
-    /// Maximum allowed size of log line
-    max_line_size: Option<usize>,
+    /// Maximum log lines in a single request
+    max_log_lines: Option<usize>,
     /// Maximum allowed api request size
     max_payload_size: Option<usize>,
 }
@@ -62,7 +62,7 @@ impl DataDogConfigBuilder {
             api_host: None,
             tags: vec![],
             source: "rust".to_string(),
-            max_line_size: None,
+            max_log_lines: None,
             max_payload_size: None,
         }
     }
@@ -92,9 +92,9 @@ impl DataDogConfigBuilder {
         self
     }
 
-    /// Configure max line size
-    pub fn with_max_line_size(&mut self, bytes: Option<usize>) -> &mut Self {
-        self.max_line_size = bytes;
+    /// Configure max log lines
+    pub fn with_max_log_lines(&mut self, count: Option<usize>) -> &mut Self {
+        self.max_log_lines = count;
         self
     }
 
@@ -117,11 +117,11 @@ impl DataDogConfigBuilder {
                 .unwrap_or_else(|| DEFAULT_DATADOG_INGEST_URL.to_string()),
             tags: self.tags.to_owned(),
             source: self.source.to_owned(),
-            max_line_size: self
-                .max_line_size
+            max_log_lines: self
+                .max_log_lines
                 .as_ref()
                 .map(|s| s.to_owned())
-                .unwrap_or(DEFAULT_MAX_LINE_BYTES),
+                .unwrap_or(DEFAULT_MAX_LOG_LINES),
             max_payload_size: self
                 .max_payload_size
                 .as_ref()

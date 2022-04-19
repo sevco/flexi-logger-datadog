@@ -6,7 +6,7 @@ use crate::DataDogConfig;
 use chrono::{DateTime, Duration, Utc};
 use flume::RecvTimeoutError;
 use itertools::Itertools;
-use log::{debug, error};
+use log::debug;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::Client;
 use std::time;
@@ -24,8 +24,8 @@ pub struct DataDogHttpWriter {
     api_key: String,
     /// Query path
     query: Vec<(String, String)>,
-    /// Maximum allowed line sized
-    max_line_size: usize,
+    /// Maximum log lines in a single request
+    max_log_lines: usize,
     /// Maximum allowed request size
     max_payload_size: usize,
     /// How often to flush writer (never if [`None`])
@@ -71,7 +71,7 @@ impl DataDogHttpWriter {
             api_host: datadog_config.api_host,
             api_key: datadog_config.api_key,
             query,
-            max_line_size: datadog_config.max_line_size,
+            max_log_lines: datadog_config.max_log_lines,
             max_payload_size: datadog_config.max_payload_size,
             flush_interval,
             last_flushed: Utc::now(),
@@ -154,13 +154,8 @@ impl DataDogHttpWriter {
 
     /// Handle incoming log line
     async fn on_message(&mut self, message: String) {
-        let bytes = message.as_bytes().len();
-        if bytes > self.max_line_size {
-            error!("Log line longer than 1MB maximum");
-        } else {
-            self.buffer_size += message.as_bytes().len();
-            self.buffer_lines.push(message);
-        }
+        self.buffer_size += message.as_bytes().len();
+        self.buffer_lines.push(message);
     }
 
     /// Flush log lines in buffer
@@ -218,7 +213,9 @@ impl DataDogHttpWriter {
 
     /// Check if buffer
     async fn check_flush(&mut self) -> Result<(), Error> {
-        if self.buffer_size >= self.max_payload_size {
+        if self.buffer_lines.len() == self.max_log_lines {
+            self.flush().await
+        } else if self.buffer_size >= self.max_payload_size {
             self.flush().await
         } else {
             Ok(())
