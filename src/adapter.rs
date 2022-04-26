@@ -51,11 +51,11 @@ impl DataDogAdapter {
 impl LogWriter for DataDogAdapter {
     fn write(&self, _now: &mut DeferredNow, record: &Record) -> io::Result<()> {
         self.log_channel
-            .try_lock()
-            .map_err(|_| {
+            .lock()
+            .map_err(|e| {
                 io::Error::new(
                     ErrorKind::BrokenPipe,
-                    LockError("Failed to acquire logs lock".to_string()),
+                    LockError(format!("Failed to acquire logs lock: {}", e)),
                 )
             })
             .and_then(|maybe_logs| match &*maybe_logs {
