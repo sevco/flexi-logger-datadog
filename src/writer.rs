@@ -4,12 +4,17 @@ use crate::error::Error::ChannelError;
 use crate::error::{log_error, Error};
 use crate::DataDogConfig;
 use chrono::{DateTime, Duration, Utc};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use flume::RecvTimeoutError;
+use futures::future::try_join_all;
 use itertools::Itertools;
-use log::debug;
-use reqwest::header::CONTENT_TYPE;
+use log::{debug, warn};
+use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::Client;
+use std::io::Write;
 use std::time;
+use tracing::instrument;
 
 /// Default channel recv timeout
 const POLL_TIMEOUT_MS: u64 = 100;
@@ -28,6 +33,8 @@ pub struct DataDogHttpWriter {
     max_log_lines: usize,
     /// Maximum allowed request size
     max_payload_size: usize,
+    /// Maximum size allowed for a single line
+    max_line_size: usize,
     /// How often to flush writer (never if [`None`])
     flush_interval: Option<Duration>,
     /// When logs were last flushed
@@ -42,6 +49,8 @@ pub struct DataDogHttpWriter {
     buffer_lines: Vec<String>,
     /// Size of buffer
     buffer_size: usize,
+    /// Whether to compress body
+    gzip: bool,
 }
 
 impl DataDogHttpWriter {
@@ -72,6 +81,7 @@ impl DataDogHttpWriter {
             api_key: datadog_config.api_key,
             query,
             max_log_lines: datadog_config.max_log_lines,
+            max_line_size: datadog_config.max_line_size,
             max_payload_size: datadog_config.max_payload_size,
             flush_interval,
             last_flushed: Utc::now(),
@@ -80,12 +90,14 @@ impl DataDogHttpWriter {
             flush_response,
             buffer_lines: vec![],
             buffer_size: 0,
+            gzip: datadog_config.gzip,
         }
     }
 
     /// Writer poll loop.
     ///
     /// This is what drives the actual execution of the logger
+    #[instrument(level = "debug", skip_all)]
     pub async fn poll(&mut self) {
         let timeout = time::Duration::from_millis(POLL_TIMEOUT_MS);
         loop {
@@ -120,10 +132,11 @@ impl DataDogHttpWriter {
     }
 
     /// Receive and process any incoming log lines
+    #[instrument(level = "debug", skip_all)]
     async fn receive_logs(&mut self, timeout: time::Duration) -> Result<bool, Error> {
         match self.logs.recv_timeout(timeout) {
             Ok(l) => {
-                self.on_message(l).await;
+                self.on_message(l);
                 self.check_flush().await?;
                 Ok(true)
             }
@@ -133,6 +146,7 @@ impl DataDogHttpWriter {
     }
 
     /// Receive and process any incoming flush requests
+    #[instrument(level = "debug", skip_all)]
     async fn receive_flush(&mut self, timeout: time::Duration) -> Result<bool, Error> {
         match self.flush_request.recv_timeout(timeout / 2) {
             Ok(_) => {
@@ -153,12 +167,14 @@ impl DataDogHttpWriter {
     }
 
     /// Handle incoming log line
-    async fn on_message(&mut self, message: String) {
+    #[instrument(level = "debug", skip_all)]
+    fn on_message(&mut self, message: String) {
         self.buffer_size += message.as_bytes().len();
         self.buffer_lines.push(message);
     }
 
     /// Flush log lines in buffer
+    #[instrument(level = "debug", skip_all)]
     async fn flush(&mut self) -> Result<(), Error> {
         if self.buffer_size > 0 {
             debug!("Flushing logger");
@@ -170,28 +186,67 @@ impl DataDogHttpWriter {
         Ok(())
     }
 
-    /// Post data to api
-    async fn send(&mut self) -> Result<(), Error> {
-        debug!("Sending {} log lines", self.buffer_lines.len());
-        match self
-            .client
-            .post(&self.api_host)
-            .query(&self.query)
-            .header("DD-API-KEY", &self.api_key)
-            .header(CONTENT_TYPE, "text/plain")
-            .body(self.buffer_lines.join("\n"))
-            .send()
-            .await
-        {
-            Ok(r) => {
-                r.error_for_status()?;
-                Ok(())
+    /// Batch log lines into appropriately sized and optionally compressed request bodies
+    #[instrument(level = "debug", skip_all)]
+    fn batch_requests(&self) -> Result<Vec<Vec<u8>>, Error> {
+        let mut batches = vec![];
+        let mut batch = Vec::new();
+        for line in &self.buffer_lines {
+            let content = if self.gzip {
+                let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+                enc.write_all(line.as_bytes())?;
+                enc.write_all("\n".as_bytes())?;
+                enc.finish()?
+            } else {
+                format!("{}\n", line).into_bytes()
+            };
+
+            if content.len() > self.max_line_size {
+                warn!("Log line too large, not sending to DataDog")
+            } else {
+                if batch.len() + content.len() > self.max_payload_size {
+                    batches.push(batch);
+                    batch = Vec::new();
+                }
+                batch.write_all(&content)?;
             }
-            Err(e) => Err(e.into()),
         }
+        if !batch.is_empty() {
+            batches.push(batch);
+        }
+        Ok(batches)
+    }
+
+    /// Post data to api
+    #[instrument(level = "debug", skip_all)]
+    async fn send(&mut self) -> Result<(), Error> {
+        try_join_all(self.batch_requests()?.into_iter().map(|batch| async {
+            debug!("Sending {} log lines", self.buffer_lines.len());
+            let mut req = self
+                .client
+                .post(&self.api_host)
+                .query(&self.query)
+                .header("DD-API-KEY", &self.api_key)
+                .header(CONTENT_TYPE, "text/plain")
+                .body(batch);
+            if self.gzip {
+                req = req.header(CONTENT_ENCODING, "gzip");
+            }
+
+            match req.send().await {
+                Ok(r) => {
+                    r.error_for_status()?;
+                    Ok(())
+                }
+                Err(e) => Err(e.into()),
+            }
+        }))
+        .await
+        .map(|_| ())
     }
 
     /// Check if flush interval has elapsed since last send, and flush if so
+    #[instrument(level = "debug", skip_all)]
     async fn time_based_flush(&mut self) -> Result<(), Error> {
         if let Some(d) = self.flush_interval {
             if Utc::now() > self.last_flushed + d {
@@ -202,16 +257,18 @@ impl DataDogHttpWriter {
     }
 
     /// Drain and handle any messages on the log channel
+    #[instrument(level = "debug", skip_all)]
     async fn drain(&mut self) -> Result<(), Error> {
         let drained = self.logs.drain().collect_vec();
         for message in drained {
-            self.on_message(message).await;
-            self.check_flush().await?;
+            self.on_message(message);
         }
+        self.check_flush().await?;
         Ok(())
     }
 
     /// Check if buffer
+    #[instrument(level = "debug", skip_all)]
     async fn check_flush(&mut self) -> Result<(), Error> {
         if self.buffer_lines.len() == self.max_log_lines {
             self.flush().await

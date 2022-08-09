@@ -90,6 +90,7 @@ mod tests {
         );
         builder
             .with_tags(vec![("test_key", "test_value")])
+            .with_gzip(Some(false))
             .with_api_host(Some(host));
         builder
     }
@@ -121,7 +122,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_drop() -> Result<()> {
         let server = MockServer::start();
-        let mock = mock(&server, vec!["DEBUG [] this is a test"]);
+        let mock = mock(&server, vec!["DEBUG [] this is a test\n"]);
 
         with_logger(
             dd_config(server.base_url()).build(),
@@ -144,7 +145,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_flush() -> Result<()> {
         let server = MockServer::start();
-        let mock = mock(&server, vec!["DEBUG [] this is a test"]);
+        let mock = mock(&server, vec!["DEBUG [] this is a test\n"]);
 
         with_logger(
             dd_config(server.base_url()).build(),
@@ -167,13 +168,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_max_payload() -> Result<()> {
         let server = MockServer::start();
-        let line = "DEBUG [] this is a test";
         let mocks = (0..3)
-            .map(|i| mock(&server, vec![&format!("DEBUG [] this is a test {}", i)]))
+            .map(|i| mock(&server, vec![&format!("DEBUG [] this is a test {}\n", i)]))
             .collect_vec();
 
         let mut dd_config = dd_config(server.base_url());
-        dd_config.with_max_payload_size(Some(line.as_bytes().len()));
+        dd_config.with_max_payload_size(Some("DEBUG [] this is a test 0\n".len()));
 
         with_logger(dd_config.build(), None, |logger| async move {
             for i in 0..3 {
@@ -195,7 +195,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_schedule() -> Result<()> {
         let server = MockServer::start();
-        let mock = mock(&server, vec!["DEBUG [] this is a test"]);
+        let mock = mock(&server, vec!["DEBUG [] this is a test\n"]);
 
         with_logger(
             dd_config(server.base_url()).build(),

@@ -8,6 +8,7 @@ use log::Record;
 use std::io;
 use std::io::ErrorKind;
 use std::sync::Mutex;
+use tracing::instrument;
 
 /// Channel for sending log messages
 struct LogStream {
@@ -49,6 +50,7 @@ impl DataDogAdapter {
 }
 
 impl LogWriter for DataDogAdapter {
+    #[instrument(level = "debug", skip_all)]
     fn write(&self, _now: &mut DeferredNow, record: &Record) -> io::Result<()> {
         self.log_channel
             .lock()
@@ -76,6 +78,7 @@ impl LogWriter for DataDogAdapter {
             })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn flush(&self) -> io::Result<()> {
         self.flush_channel
             .try_lock()

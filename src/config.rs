@@ -7,8 +7,8 @@ use itertools::Itertools;
 const DEFAULT_DATADOG_INGEST_URL: &str = "https://http-intake.logs.datadoghq.com/api/v2/logs";
 /// Maximum request size DataDog api will accept
 const DEFAULT_MAX_PAYLOAD_BYTES: usize = 5000000;
-/// Maximum bytes to buffer before sending to DataDog
-const DEFAULT_BODY_SEND_BYTES: usize = ((DEFAULT_MAX_PAYLOAD_BYTES as f64) * 0.75f64) as usize;
+/// Maximum line size DataDog api will accept
+const DEFAULT_MAX_LINE_BYTES: usize = 1000000;
 /// Maximum number of log lines allowed in an array
 const DEFAULT_MAX_LOG_LINES: usize = 1000;
 
@@ -30,6 +30,10 @@ pub struct DataDogConfig {
     pub max_log_lines: usize,
     /// Maximum allowed api request size
     pub max_payload_size: usize,
+    /// Maximum size allowed for a single line
+    pub max_line_size: usize,
+    /// Whether to compress body
+    pub gzip: bool,
 }
 
 /// Builder for [`DataDogConfig`]
@@ -48,8 +52,12 @@ pub struct DataDogConfigBuilder {
     source: String,
     /// Maximum log lines in a single request
     max_log_lines: Option<usize>,
+    /// Maximum size allowed for a single line
+    max_line_size: Option<usize>,
     /// Maximum allowed api request size
     max_payload_size: Option<usize>,
+    /// Whether to compress body
+    gzip: Option<bool>,
 }
 
 impl DataDogConfigBuilder {
@@ -63,7 +71,9 @@ impl DataDogConfigBuilder {
             tags: vec![],
             source: "rust".to_string(),
             max_log_lines: None,
+            max_line_size: None,
             max_payload_size: None,
+            gzip: None,
         }
     }
 
@@ -98,9 +108,21 @@ impl DataDogConfigBuilder {
         self
     }
 
+    /// Configure max line size
+    pub fn with_max_line_size(&mut self, bytes: Option<usize>) -> &mut Self {
+        self.max_line_size = bytes;
+        self
+    }
+
     /// Configure max payload size
     pub fn with_max_payload_size(&mut self, bytes: Option<usize>) -> &mut Self {
         self.max_payload_size = bytes;
+        self
+    }
+
+    /// Configure compression
+    pub fn with_gzip(&mut self, gzip: Option<bool>) -> &mut Self {
+        self.gzip = gzip;
         self
     }
 
@@ -122,11 +144,17 @@ impl DataDogConfigBuilder {
                 .as_ref()
                 .map(|s| s.to_owned())
                 .unwrap_or(DEFAULT_MAX_LOG_LINES),
+            max_line_size: self
+                .max_line_size
+                .as_ref()
+                .map(|s| s.to_owned())
+                .unwrap_or(DEFAULT_MAX_LINE_BYTES),
             max_payload_size: self
                 .max_payload_size
                 .as_ref()
                 .map(|s| s.to_owned())
-                .unwrap_or(DEFAULT_BODY_SEND_BYTES),
+                .unwrap_or(DEFAULT_MAX_PAYLOAD_BYTES),
+            gzip: self.gzip.unwrap_or(true),
         }
     }
 }
